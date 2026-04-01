@@ -1,0 +1,754 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Live Vision Simulation</title>
+<style>
+  :root {
+    --panel-bg: rgba(15, 18, 30, 0.92);
+    --panel-border: rgba(255,255,255,0.08);
+    --accent: #5b9cf5;
+    --text: #e4e8f0;
+    --muted: #8a92a6;
+    --danger: #f06060;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #000; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, sans-serif; color: var(--text); -webkit-tap-highlight-color: transparent; }
+
+  /* Hidden video element — camera feed source */
+  #cameraVideo { display: none; }
+
+  /* WebGL canvas fills entire viewport */
+  #glCanvas { position: fixed; top: 0; left: 0; width: 100%; height: 100%; display: block; }
+
+  /* ─── Permission / Error screens ─── */
+  #startScreen {
+    position: fixed; inset: 0; z-index: 100; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; background: #0a0d18; gap: 20px; padding: 24px; text-align: center;
+  }
+  #startScreen h1 { font-size: 1.4rem; font-weight: 700; letter-spacing: -0.02em; }
+  #startScreen p { color: var(--muted); max-width: 380px; font-size: 0.92rem; line-height: 1.5; }
+  #startBtn {
+    background: var(--accent); color: #fff; border: none; border-radius: 12px;
+    padding: 14px 36px; font-size: 1rem; font-weight: 600; cursor: pointer;
+    transition: background 0.15s;
+  }
+  #startBtn:hover { background: #4a8ae0; }
+  #errorMsg { color: var(--danger); font-size: 0.9rem; max-width: 360px; display: none; }
+
+  /* ─── Controls overlay ─── */
+  #controls {
+    position: fixed; bottom: 0; left: 0; right: 0; z-index: 50;
+    background: var(--panel-bg); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    border-top: 1px solid var(--panel-border);
+    padding: 14px 16px calc(14px + env(safe-area-inset-bottom, 0px)) 16px;
+    display: none; /* shown after camera starts */
+    transition: transform 0.3s ease;
+  }
+  #controls.collapsed { transform: translateY(calc(100% - 48px)); }
+  #collapseBtn {
+    position: absolute; top: -28px; left: 50%; transform: translateX(-50%);
+    background: var(--panel-bg); border: 1px solid var(--panel-border); border-bottom: none;
+    border-radius: 10px 10px 0 0; padding: 4px 24px; color: var(--muted);
+    font-size: 0.75rem; cursor: pointer; backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+  }
+
+  .ctrl-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+  .ctrl-row:last-child { margin-bottom: 0; }
+
+  .ctrl-label { font-size: 0.78rem; color: var(--muted); min-width: 90px; flex-shrink: 0; }
+  .ctrl-value { font-size: 0.78rem; color: var(--accent); min-width: 56px; text-align: right; font-variant-numeric: tabular-nums; }
+
+  select {
+    background: rgba(255,255,255,0.06); border: 1px solid var(--panel-border); color: var(--text);
+    border-radius: 8px; padding: 8px 10px; font-size: 0.88rem; flex: 1; min-width: 0;
+    -webkit-appearance: none; appearance: none;
+  }
+  input[type="range"] {
+    flex: 1; min-width: 0; height: 6px; -webkit-appearance: none; appearance: none;
+    background: rgba(255,255,255,0.1); border-radius: 3px; outline: none;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 22px; height: 22px; border-radius: 50%;
+    background: var(--accent); border: 2px solid #fff; cursor: pointer;
+  }
+
+  .mode-desc { font-size: 0.72rem; color: var(--muted); line-height: 1.35; margin-top: 2px; }
+
+  /* ─── HUD overlay (top) ─── */
+  #hud {
+    position: fixed; top: env(safe-area-inset-top, 8px); left: 12px; right: 12px; z-index: 50;
+    display: none; /* shown after camera starts */
+    pointer-events: none;
+  }
+  #hud .badge {
+    display: inline-block; background: var(--panel-bg); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+    border: 1px solid var(--panel-border); border-radius: 8px;
+    padding: 5px 10px; font-size: 0.72rem; color: var(--muted); font-variant-numeric: tabular-nums;
+  }
+
+  /* ─── Snapshot button ─── */
+  #snapBtn {
+    position: fixed; right: 16px; z-index: 50; display: none;
+    width: 56px; height: 56px; border-radius: 50%; background: rgba(255,255,255,0.15);
+    border: 3px solid #fff; cursor: pointer; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    transition: transform 0.1s;
+  }
+  #snapBtn:active { transform: scale(0.9); }
+
+  /* Flash feedback */
+  #flash { position: fixed; inset: 0; background: #fff; opacity: 0; pointer-events: none; z-index: 200; transition: opacity 0.08s; }
+</style>
+</head>
+<body>
+
+<!-- ─── Start screen ─── -->
+<div id="startScreen">
+  <h1>Live Vision Simulation</h1>
+  <p>View your surroundings through simulated low-vision conditions in real time. Uses your rear camera and GPU-accelerated filters.</p>
+  <button id="startBtn">Start Camera</button>
+  <p id="errorMsg"></p>
+  <p style="font-size:0.75rem; color:var(--muted); margin-top:12px;">
+    Requires HTTPS &bull; Camera stays on-device &bull; No data is transmitted
+  </p>
+</div>
+
+<!-- Camera source (hidden) -->
+<video id="cameraVideo" playsinline muted></video>
+
+<!-- WebGL output -->
+<canvas id="glCanvas"></canvas>
+
+<!-- HUD -->
+<div id="hud">
+  <span class="badge" id="hudInfo">--</span>
+</div>
+
+<!-- Snapshot -->
+<button id="snapBtn" aria-label="Take screenshot"></button>
+
+<!-- Flash overlay -->
+<div id="flash"></div>
+
+<!-- Controls panel -->
+<div id="controls">
+  <button id="collapseBtn">&#9650; Controls</button>
+
+  <div class="ctrl-row">
+    <span class="ctrl-label">Condition</span>
+    <select id="modeSelect">
+      <option value="0">Normal</option>
+      <optgroup label="Acuity &amp; Contrast">
+        <option value="1">Reduced Acuity</option>
+        <option value="2">Reduced Contrast</option>
+      </optgroup>
+      <optgroup label="Eye Conditions">
+        <option value="3">Cataracts</option>
+        <option value="4">Glaucoma (Tunnel Vision)</option>
+        <option value="5">AMD (Central Scotoma)</option>
+        <option value="6">Diabetic Retinopathy</option>
+      </optgroup>
+      <optgroup label="Color Vision">
+        <option value="7">Deuteranopia (Red-Green)</option>
+        <option value="8">Protanopia (Red-Green)</option>
+        <option value="9">Tritanopia (Blue-Yellow)</option>
+      </optgroup>
+    </select>
+  </div>
+
+  <div class="ctrl-row">
+    <span class="ctrl-label">Severity</span>
+    <input type="range" id="severity" min="0" max="1" step="0.01" value="0.5">
+    <span class="ctrl-value" id="sevVal">0.50</span>
+  </div>
+
+  <div class="ctrl-row" id="acuityRow" style="display:none">
+    <span class="ctrl-label">Snellen</span>
+    <span class="ctrl-value" id="snellenDisp" style="min-width:auto">20/60</span>
+  </div>
+
+  <div class="ctrl-row">
+    <span class="mode-desc" id="modeDesc">Unfiltered live camera feed.</span>
+  </div>
+</div>
+
+<script>
+/* =========================================================================
+   Live Vision Simulation — getUserMedia → WebGL2 GLSL shader pipeline
+   ========================================================================= */
+
+// ─── Mode descriptions ───
+const MODE_DESC = [
+  'Unfiltered live camera feed.',
+  'Simulates reduced visual acuity using mipmap-based blur (logMAR scale).',
+  'Reduces luminance contrast toward mid-gray (Pelli-Robson model).',
+  'Lens clouding: blur + yellowing + veiling glare (haze).',
+  'Peripheral field loss — darkens edges, preserving central vision.',
+  'Central vision loss — dark scotoma at fixation point.',
+  'Patchy dark spots (hemorrhages/floaters) with mild contrast loss.',
+  'Deuteranopia: red-green confusion (Machado 2009, L-cone shift).',
+  'Protanopia: red-green confusion (Machado 2009, M-cone shift).',
+  'Tritanopia: blue-yellow confusion (Machado 2009, S-cone shift).',
+];
+
+// ─── Machado 2009 CVD matrices (severity = 1.0) ───
+// These are 3×3 linear-RGB transform matrices for full dichromacy.
+// For partial severity, interpolate toward identity matrix.
+const CVD_DEUTAN = [
+   0.367322, 0.860646, -0.227968,
+   0.280085, 0.672501,  0.047413,
+  -0.011820, 0.042940,  0.968881
+];
+const CVD_PROTAN = [
+   0.152286, 1.052583, -0.204868,
+   0.114503, 0.786281,  0.099216,
+  -0.003882,-0.048116,  1.051998
+];
+const CVD_TRITAN = [
+   1.255528,-0.076749,-0.178779,
+  -0.078411, 0.930809, 0.147602,
+   0.004733, 0.691367, 0.303900
+];
+
+// ─── GLSL Shader Sources ───
+
+const VERT_SRC = `#version 300 es
+in vec4 aPos;
+in vec2 aUV;
+out vec2 vUV;
+void main(){
+  vUV = aUV;
+  gl_Position = aPos;
+}`;
+
+// Fragment shader: all modes in one shader, selected by uMode uniform
+const FRAG_SRC = `#version 300 es
+precision mediump float;
+
+in vec2 vUV;
+out vec4 fragColor;
+
+uniform sampler2D uTex;
+uniform int uMode;          // 0=normal, 1=acuity, 2=contrast, 3=cataract, 4=glaucoma, 5=AMD, 6=DR, 7-9=CVD
+uniform float uSeverity;    // 0..1
+uniform float uTime;        // seconds (for animated floaters in DR)
+uniform vec2 uResolution;   // canvas pixel size
+
+// ─── sRGB linearize / delinearize ───
+vec3 srgbToLinear(vec3 c){
+  return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+}
+vec3 linearToSrgb(vec3 c){
+  return mix(c * 12.92, 1.055 * pow(c, vec3(1.0/2.4)) - 0.055, step(0.0031308, c));
+}
+
+// ─── Machado CVD color transform ───
+// Matrices passed as 3 vec3 uniforms (rows)
+uniform vec3 uCVD0, uCVD1, uCVD2;
+
+vec3 applyCVD(vec3 rgb, float sev){
+  // Interpolate between identity and full-dichromacy matrix
+  mat3 identity = mat3(1.0);
+  mat3 cvdFull = mat3(uCVD0, uCVD1, uCVD2);
+  mat3 m = identity + sev * (cvdFull - identity);
+  return clamp(m * rgb, 0.0, 1.0);
+}
+
+// ─── Pseudo-random for DR floaters ───
+float hash(vec2 p){
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+void main(){
+  vec2 uv = vUV;
+  // Flip Y for camera (video texture is top-down, GL is bottom-up)
+  uv.y = 1.0 - uv.y;
+
+  vec4 texel = texture(uTex, uv);
+  vec3 col = texel.rgb;
+
+  // ── Mode 0: Normal ──
+  if(uMode == 0){
+    fragColor = vec4(col, 1.0);
+    return;
+  }
+
+  // ── Mode 1: Reduced Acuity (mipmap blur) ──
+  // severity 0 = 20/20 (no blur), severity 1 = ~20/400 (heavy blur)
+  // We map severity to a mip LOD level. Max LOD depends on texture size.
+  // logMAR = severity * 1.3 (covers 20/20 to ~20/400)
+  if(uMode == 1){
+    float logMAR = uSeverity * 1.3;
+    // LOD roughly maps: each level halves resolution, ~doubling MAR
+    // LOD = log2(10^logMAR) = logMAR * log2(10) ≈ logMAR * 3.3219
+    float lod = logMAR * 3.3219;
+    col = textureLod(uTex, uv, lod).rgb;
+    fragColor = vec4(col, 1.0);
+    return;
+  }
+
+  // ── Mode 2: Reduced Contrast (Pelli-Robson model) ──
+  // severity 0 = PR 2.0 (normal), severity 1 = PR 0.0 (severe)
+  if(uMode == 2){
+    float PR = 2.0 - uSeverity * 2.0;  // maps 0..1 → 2.0..0.0
+    float k = min(1.0, pow(10.0, PR - 2.0));
+    vec3 lin = srgbToLinear(col);
+    float Y = dot(lin, vec3(0.2126, 0.7152, 0.0722));
+    lin = vec3(Y) + k * (lin - vec3(Y));
+    col = linearToSrgb(clamp(lin, 0.0, 1.0));
+    fragColor = vec4(col, 1.0);
+    return;
+  }
+
+  // ── Mode 3: Cataracts (blur + yellowing + veiling glare) ──
+  if(uMode == 3){
+    // Blur component
+    float lod = uSeverity * 2.8;
+    vec3 blurred = textureLod(uTex, uv, lod).rgb;
+
+    // Yellowing: reduce blue, slightly warm red
+    float yf = uSeverity * 0.7;
+    blurred.b *= (1.0 - 0.8 * yf);
+    blurred.r *= (1.0 + 0.10 * yf);
+    blurred.g *= (1.0 + 0.05 * yf);
+
+    // Veiling glare: blend toward a bright desaturated veil
+    float veil = uSeverity * 0.25;
+    vec3 lin = srgbToLinear(blurred);
+    float Y = dot(lin, vec3(0.2126, 0.7152, 0.0722));
+    float veilLum = 0.35; // approximate scattered light
+    lin = mix(lin, vec3(veilLum + 0.08, veilLum + 0.04, veilLum), veil);
+    col = linearToSrgb(clamp(lin, 0.0, 1.0));
+    fragColor = vec4(col, 1.0);
+    return;
+  }
+
+  // ── Mode 4: Glaucoma (tunnel vision) ──
+  if(uMode == 4){
+    vec2 center = vec2(0.5);
+    float aspect = uResolution.x / uResolution.y;
+    vec2 diff = (uv - center) * vec2(aspect, 1.0);
+    float dist = length(diff);
+
+    // Radius of clear vision shrinks with severity
+    float clearRadius = mix(0.85, 0.12, uSeverity);
+    float fadeWidth = mix(0.25, 0.08, uSeverity);
+    float mask = 1.0 - smoothstep(clearRadius, clearRadius + fadeWidth, dist);
+
+    // Also blur the periphery
+    float lod = (1.0 - mask) * uSeverity * 3.0;
+    vec3 blurred = textureLod(uTex, uv, lod).rgb;
+    col = mix(vec3(0.0), blurred, mask);
+
+    fragColor = vec4(col, 1.0);
+    return;
+  }
+
+  // ── Mode 5: AMD (central scotoma) ──
+  if(uMode == 5){
+    vec2 center = vec2(0.5);
+    float aspect = uResolution.x / uResolution.y;
+    vec2 diff = (uv - center) * vec2(aspect, 1.0);
+    float dist = length(diff);
+
+    // Scotoma size grows with severity
+    float scotomaRadius = mix(0.02, 0.18, uSeverity);
+    float fadeWidth = mix(0.02, 0.06, uSeverity);
+    float mask = smoothstep(scotomaRadius - fadeWidth, scotomaRadius + fadeWidth, dist);
+
+    // Inside scotoma: dark/very blurred; outside: mild acuity loss
+    float lodOuter = uSeverity * 0.6;
+    vec3 outer = textureLod(uTex, uv, lodOuter).rgb;
+    vec3 inner = vec3(0.02); // near-black scotoma
+
+    col = mix(inner, outer, mask);
+    fragColor = vec4(col, 1.0);
+    return;
+  }
+
+  // ── Mode 6: Diabetic Retinopathy (floaters + contrast loss) ──
+  if(uMode == 6){
+    // Mild global contrast loss
+    float PR = 2.0 - uSeverity * 0.8;
+    float k = min(1.0, pow(10.0, PR - 2.0));
+    vec3 lin = srgbToLinear(col);
+    float Y = dot(lin, vec3(0.2126, 0.7152, 0.0722));
+    lin = vec3(Y) + k * (lin - vec3(Y));
+
+    // Mild blur
+    float lod = uSeverity * 1.2;
+    vec3 blurred = srgbToLinear(textureLod(uTex, uv, lod).rgb);
+    lin = mix(lin, blurred, 0.4);
+
+    col = linearToSrgb(clamp(lin, 0.0, 1.0));
+
+    // Patchy dark spots (hemorrhages) — static random placement
+    float numSpots = 4.0 + uSeverity * 12.0;
+    for(float i = 0.0; i < 16.0; i++){
+      if(i >= numSpots) break;
+      // Pseudo-random spot center (deterministic per i, slowly drifting with time)
+      vec2 spotCenter = vec2(
+        hash(vec2(i * 7.13, 3.71)),
+        hash(vec2(i * 11.97, 5.23))
+      );
+      // Slow drift
+      spotCenter += 0.03 * vec2(
+        sin(uTime * 0.15 + i * 2.1),
+        cos(uTime * 0.12 + i * 1.7)
+      );
+      spotCenter = fract(spotCenter);
+
+      float spotSize = 0.02 + 0.04 * hash(vec2(i * 3.3, 9.1)) * uSeverity;
+      float aspect2 = uResolution.x / uResolution.y;
+      vec2 d = (uv - spotCenter) * vec2(aspect2, 1.0);
+      float dist2 = length(d);
+      float spotMask = 1.0 - smoothstep(spotSize * 0.5, spotSize, dist2);
+      col = mix(col, col * 0.08, spotMask * 0.85);
+    }
+
+    fragColor = vec4(col, 1.0);
+    return;
+  }
+
+  // ── Modes 7–9: CVD (Machado 2009) ──
+  if(uMode >= 7 && uMode <= 9){
+    vec3 lin = srgbToLinear(col);
+    lin = applyCVD(lin, uSeverity);
+    col = linearToSrgb(lin);
+    fragColor = vec4(col, 1.0);
+    return;
+  }
+
+  fragColor = vec4(col, 1.0);
+}`;
+
+// ─── Global state ───
+let gl, program, videoEl, glCanvas;
+let uTex, uMode, uSeverity, uTime, uResolution, uCVD0, uCVD1, uCVD2;
+let videoTexture;
+let currentMode = 0;
+let currentSeverity = 0.5;
+let startTime = 0;
+let animId = null;
+let videoReady = false;
+
+// ─── Initialize WebGL2 ───
+function initGL() {
+  glCanvas = document.getElementById('glCanvas');
+  gl = glCanvas.getContext('webgl2', { antialias: false, alpha: false, preserveDrawingBuffer: true });
+  if (!gl) {
+    showError('WebGL 2 is not available in this browser. Try Chrome or Safari.');
+    return false;
+  }
+
+  // Compile shaders
+  const vs = compileShader(gl.VERTEX_SHADER, VERT_SRC);
+  const fs = compileShader(gl.FRAGMENT_SHADER, FRAG_SRC);
+  if (!vs || !fs) return false;
+
+  program = gl.createProgram();
+  gl.attachShader(program, vs);
+  gl.attachShader(program, fs);
+  gl.linkProgram(program);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    showError('Shader link failed: ' + gl.getProgramInfoLog(program));
+    return false;
+  }
+  gl.useProgram(program);
+
+  // Fullscreen quad (2 triangles)
+  const quad = new Float32Array([
+    // pos(x,y)  uv(s,t)
+    -1, -1,  0, 0,
+     1, -1,  1, 0,
+    -1,  1,  0, 1,
+     1,  1,  1, 1,
+  ]);
+  const vbo = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+  gl.bufferData(gl.ARRAY_BUFFER, quad, gl.STATIC_DRAW);
+
+  const aPos = gl.getAttribLocation(program, 'aPos');
+  const aUV  = gl.getAttribLocation(program, 'aUV');
+  gl.enableVertexAttribArray(aPos);
+  gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 16, 0);
+  gl.enableVertexAttribArray(aUV);
+  gl.vertexAttribPointer(aUV, 2, gl.FLOAT, false, 16, 8);
+
+  // Uniforms
+  uTex = gl.getUniformLocation(program, 'uTex');
+  uMode = gl.getUniformLocation(program, 'uMode');
+  uSeverity = gl.getUniformLocation(program, 'uSeverity');
+  uTime = gl.getUniformLocation(program, 'uTime');
+  uResolution = gl.getUniformLocation(program, 'uResolution');
+  uCVD0 = gl.getUniformLocation(program, 'uCVD0');
+  uCVD1 = gl.getUniformLocation(program, 'uCVD1');
+  uCVD2 = gl.getUniformLocation(program, 'uCVD2');
+
+  // Create video texture with mipmaps
+  videoTexture = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, videoTexture);
+  // Placeholder 1x1 pixel until video loads
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0,0,0,255]));
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  // Use LINEAR_MIPMAP_LINEAR for textureLod() acuity blur
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+  gl.uniform1i(uTex, 0);
+  startTime = performance.now() / 1000;
+
+  return true;
+}
+
+function compileShader(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    console.error('Shader compile error:', gl.getShaderInfoLog(s));
+    showError('Shader compile error — see console.');
+    return null;
+  }
+  return s;
+}
+
+// ─── Camera startup ───
+async function startCamera() {
+  videoEl = document.getElementById('cameraVideo');
+
+  // Request rear camera at 720p
+  const constraints = {
+    video: {
+      facingMode: { ideal: 'environment' },
+      width:  { ideal: 1280 },
+      height: { ideal: 720 },
+      frameRate: { ideal: 30 }
+    },
+    audio: false
+  };
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    videoEl.srcObject = stream;
+    await videoEl.play();
+
+    // Log actual track settings
+    const track = stream.getVideoTracks()[0];
+    const settings = track.getSettings();
+    console.log('Camera settings:', settings);
+    document.getElementById('hudInfo').textContent =
+      `${settings.width || '?'}×${settings.height || '?'} @ ${settings.frameRate ? Math.round(settings.frameRate) : '?'}fps`;
+
+    videoReady = true;
+    document.getElementById('startScreen').style.display = 'none';
+    document.getElementById('controls').style.display = 'block';
+    document.getElementById('hud').style.display = 'block';
+    document.getElementById('snapBtn').style.display = 'block';
+    positionSnapBtn();
+
+    // Start render loop
+    renderLoop();
+
+  } catch (err) {
+    console.error('getUserMedia error:', err);
+    if (err.name === 'NotAllowedError') {
+      showError('Camera access was denied. Please allow camera access in your browser settings and reload.');
+    } else if (err.name === 'NotFoundError') {
+      showError('No camera found on this device.');
+    } else if (err.name === 'NotReadableError') {
+      showError('Camera is in use by another app. Close other camera apps and try again.');
+    } else {
+      showError('Camera error: ' + err.message);
+    }
+  }
+}
+
+function showError(msg) {
+  const el = document.getElementById('errorMsg');
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+
+// ─── Render loop ───
+function renderLoop() {
+  if (!videoReady) return;
+
+  // Prefer requestVideoFrameCallback for frame-accurate updates
+  if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+    videoEl.requestVideoFrameCallback(onVideoFrame);
+  } else {
+    // Fallback: requestAnimationFrame
+    requestAnimationFrame(onRAF);
+  }
+}
+
+function onVideoFrame(now, metadata) {
+  renderFrame();
+  if (videoReady) {
+    videoEl.requestVideoFrameCallback(onVideoFrame);
+  }
+}
+
+function onRAF() {
+  renderFrame();
+  if (videoReady) {
+    requestAnimationFrame(onRAF);
+  }
+}
+
+function renderFrame() {
+  if (!gl || !videoEl || videoEl.readyState < 2) return;
+
+  // Resize canvas to match CSS layout (devicePixelRatio-aware but capped for perf)
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const cw = Math.round(glCanvas.clientWidth * dpr);
+  const ch = Math.round(glCanvas.clientHeight * dpr);
+  if (glCanvas.width !== cw || glCanvas.height !== ch) {
+    glCanvas.width = cw;
+    glCanvas.height = ch;
+    gl.viewport(0, 0, cw, ch);
+  }
+
+  // Upload video frame as texture + generate mipmaps
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, videoTexture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, videoEl);
+  gl.generateMipmap(gl.TEXTURE_2D);
+
+  // Set uniforms
+  gl.uniform1i(uMode, currentMode);
+  gl.uniform1f(uSeverity, currentSeverity);
+  gl.uniform1f(uTime, performance.now() / 1000 - startTime);
+  gl.uniform2f(uResolution, cw, ch);
+
+  // Set CVD matrix based on mode
+  let cvd = null;
+  if (currentMode === 7) cvd = CVD_DEUTAN;
+  else if (currentMode === 8) cvd = CVD_PROTAN;
+  else if (currentMode === 9) cvd = CVD_TRITAN;
+
+  if (cvd) {
+    // GLSL mat3(a,b,c) takes COLUMNS, but Machado arrays are row-major.
+    // Pass columns of the Machado matrix so mat3 * rgb works correctly.
+    // Column 0 = [row0col0, row1col0, row2col0], etc.
+    gl.uniform3f(uCVD0, cvd[0], cvd[3], cvd[6]); // column 0
+    gl.uniform3f(uCVD1, cvd[1], cvd[4], cvd[7]); // column 1
+    gl.uniform3f(uCVD2, cvd[2], cvd[5], cvd[8]); // column 2
+  } else {
+    // Identity (no CVD)
+    gl.uniform3f(uCVD0, 1, 0, 0);
+    gl.uniform3f(uCVD1, 0, 1, 0);
+    gl.uniform3f(uCVD2, 0, 0, 1);
+  }
+
+  // Draw
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+
+// ─── Snapshot ───
+function takeSnapshot() {
+  if (!gl) return;
+  // Force one more render to ensure preserveDrawingBuffer has content
+  renderFrame();
+
+  const flash = document.getElementById('flash');
+  flash.style.opacity = '0.6';
+  setTimeout(() => { flash.style.opacity = '0'; }, 120);
+
+  glCanvas.toBlob(blob => {
+    if (!blob) return;
+    const modeNames = ['Normal','Acuity','Contrast','Cataracts','Glaucoma','AMD','DR','Deutan','Protan','Tritan'];
+    const fname = `vision_sim_${modeNames[currentMode]}_sev${Math.round(currentSeverity*100)}.png`;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = fname;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }, 'image/png');
+}
+
+// ─── Snellen display for acuity mode ───
+function severityToSnellen(sev) {
+  const logMAR = sev * 1.3;
+  const denominator = Math.round(20 * Math.pow(10, logMAR));
+  return `20/${denominator}`;
+}
+
+// ─── Position snap button above controls ───
+function positionSnapBtn() {
+  const ctrl = document.getElementById('controls');
+  const btn = document.getElementById('snapBtn');
+  // We'll position it via CSS — set bottom dynamically
+  const update = () => {
+    const ctrlH = ctrl.offsetHeight;
+    btn.style.bottom = (ctrlH + 16) + 'px';
+  };
+  update();
+  // Re-check after layout settles
+  setTimeout(update, 100);
+  window.addEventListener('resize', update);
+}
+
+// ─── UI wiring ───
+document.addEventListener('DOMContentLoaded', () => {
+  // Initialize WebGL first
+  if (!initGL()) return;
+
+  // Start button
+  document.getElementById('startBtn').addEventListener('click', startCamera);
+
+  // Mode selector
+  const modeSelect = document.getElementById('modeSelect');
+  const modeDescEl = document.getElementById('modeDesc');
+  const acuityRow = document.getElementById('acuityRow');
+  const snellenDisp = document.getElementById('snellenDisp');
+
+  modeSelect.addEventListener('change', () => {
+    currentMode = parseInt(modeSelect.value);
+    modeDescEl.textContent = MODE_DESC[currentMode] || '';
+    acuityRow.style.display = (currentMode === 1) ? 'flex' : 'none';
+    if (currentMode === 1) {
+      snellenDisp.textContent = severityToSnellen(currentSeverity);
+    }
+  });
+
+  // Severity slider
+  const sevSlider = document.getElementById('severity');
+  const sevVal = document.getElementById('sevVal');
+  sevSlider.addEventListener('input', () => {
+    currentSeverity = parseFloat(sevSlider.value);
+    sevVal.textContent = currentSeverity.toFixed(2);
+    if (currentMode === 1) {
+      snellenDisp.textContent = severityToSnellen(currentSeverity);
+    }
+  });
+
+  // Collapse toggle
+  const controls = document.getElementById('controls');
+  const collapseBtn = document.getElementById('collapseBtn');
+  collapseBtn.addEventListener('click', () => {
+    controls.classList.toggle('collapsed');
+    collapseBtn.innerHTML = controls.classList.contains('collapsed') ? '&#9660; Controls' : '&#9650; Controls';
+    setTimeout(positionSnapBtn, 350);
+  });
+
+  // Snapshot
+  document.getElementById('snapBtn').addEventListener('click', takeSnapshot);
+
+  // Handle page visibility (pause/resume)
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      videoReady = false;
+    } else if (videoEl && videoEl.srcObject) {
+      videoReady = true;
+      renderLoop();
+    }
+  });
+});
+</script>
+</body>
+</html>
