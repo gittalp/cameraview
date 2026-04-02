@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Live Vision Simulation (Multi-Condition Pipeline)</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#000000">
+<style>
+:root{
+  --pb:rgba(15,18,30,0.88);--br:rgba(255,255,255,0.08);--ac:#5b9cf5;--tx:#e4e8f0;--mu:#8a92a6;
+  --sat:env(safe-area-inset-top,0px);--sab:env(safe-area-inset-bottom,0px);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:100%;height:100%;overflow:hidden;background:#000;
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  color:var(--tx);-webkit-tap-highlight-color:transparent}
+#cameraVideo{display:none}
+#glCanvas{position:fixed;top:0;left:0;width:100%;height:100%;display:block}
+
+/* Start screen */
+#startScreen{position:fixed;inset:0;z-index:100;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;background:#0a0d18;gap:18px;padding:24px;text-align:center}
+#startScreen h1{font-size:1.3rem;font-weight:700}
+#startScreen p{color:var(--mu);max-width:380px;font-size:0.9rem}
+#startBtn{background:var(--ac);color:#fff;border:none;border-radius:12px;
+  padding:14px 36px;font-size:1rem;font-weight:600;cursor:pointer}
+
+/* Action buttons */
+.action-btns{position:fixed;z-index:55;display:none;flex-direction:column;gap:12px;
+  right:12px;top:50%;transform:translateY(-50%)}
+.action-btn{width:44px;height:44px;border-radius:50%;border:1px solid var(--br);cursor:pointer;
+  background:var(--pb);backdrop-filter:blur(10px);color:#fff;display:flex;align-items:center;justify-content:center}
+.action-btn svg{width:22px;height:22px;fill:currentColor}
+.action-btn.active{background:rgba(91,156,245,0.35);border-color:var(--ac)}
+
+/* Multi-select Controls */
+#controls{position:fixed;bottom:0;left:0;right:0;z-index:50;
+  background:var(--pb);backdrop-filter:blur(16px);
+  border-top:1px solid var(--br);padding:15px 14px calc(15px + var(--sab)) 14px;
+  display:none; transition: transform 0.3s}
+#controls.collapsed{transform:translateY(calc(100% - 40px))}
+#collapseBtn{position:absolute;top:-26px;left:50%;transform:translateX(-50%);
+  background:var(--pb);border:1px solid var(--br);border-bottom:none;
+  border-radius:8px 8px 0 0;padding:3px 20px;color:var(--mu);font-size:0.7rem;cursor:pointer}
+  
+.toggle-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-bottom: 12px;}
+.toggle-btn { background: rgba(255,255,255,0.06); border: 1px solid var(--br); color: var(--mu); 
+  border-radius: 6px; padding: 8px; font-size: 0.75rem; text-align: left; cursor: pointer; transition: 0.2s;}
+.toggle-btn.active { background: rgba(91,156,245,0.2); border-color: var(--ac); color: #fff;}
+
+.ctrl-row{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.ctrl-label{font-size:0.75rem;color:var(--mu);min-width:60px;}
+.ctrl-value{font-size:0.75rem;color:var(--ac);min-width:30px;text-align:right;}
+input[type="range"]{flex:1;height:6px;-webkit-appearance:none;background:rgba(255,255,255,0.1);border-radius:3px;}
+input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;width:20px;height:20px;border-radius:50%;background:var(--ac);}
+
+/* VR Notification */
+#vrNotify{position:fixed; top:20%; left:50%; transform:translateX(-50%); background:rgba(0,0,0,0.7); 
+  color:#fff; padding:10px 20px; border-radius:20px; font-size:0.9rem; display:none; z-index:999; pointer-events:none;}
+body.vr-active #controls{display:none!important}
+body.vr-active .action-btns{opacity:0.5}
+</style>
+</head>
+<body>
+
+<div id="startScreen">
+  <h1>Live Vision Simulation</h1>
+  <p>Stack multiple conditions. Upgraded to 1080p with 64-sample high-fidelity optical blur.</p>
+  <button id="startBtn">Start Camera</button>
+</div>
+
+<video id="cameraVideo" playsinline muted></video>
+<canvas id="glCanvas"></canvas>
+
+<div class="action-btns" id="actionBtns">
+  <button class="action-btn" id="vrBtn" title="VR Mode">
+    <svg viewBox="0 0 24 24"><path d="M20.74 6H3.21C2.55 6 2 6.57 2 7.28v8.44c0 .7.55 1.28 1.23 1.28h4.79c.52 0 .98-.34 1.14-.84l1.24-3.96h2.2l1.24 3.96c.16.5.62.84 1.14.84h4.79c.68 0 1.23-.57 1.23-1.28V7.28C22 6.57 21.45 6 20.74 6zM7.5 14.5c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm9 0c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg>
+  </button>
+</div>
+
+<div id="vrNotify">Severity: 0%</div>
+
+<div id="controls">
+  <button id="collapseBtn">&#9650; Controls</button>
+
+  <div class="toggle-grid">
+    <button class="toggle-btn" data-flag="1">Acuity Loss (CSF)</button>
+    <button class="toggle-btn" data-flag="2">Reduced Contrast</button>
+    <button class="toggle-btn" data-flag="4">Cataracts</button>
+    <button class="toggle-btn" data-flag="8">Glaucoma</button>
+    <button class="toggle-btn" data-flag="16">AMD (Scotoma)</button>
+    <button class="toggle-btn" data-flag="32">Diabetic Retinopathy</button>
+  </div>
+
+  <div class="ctrl-row">
+    <span class="ctrl-label">Severity</span>
+    <input type="range" id="severity" min="0" max="1" step="0.01" value="0.5">
+    <span class="ctrl-value" id="sevVal">50%</span>
+  </div>
+</div>
+
+<script>
+/* =========================================================================
+   Live Vision Simulation v5 - The Stacking Pipeline
+   - Upgraded to 1080p
+   - 64-Sample Blur (Fixes the "pixel squares")
+   - Bitmask Stacking (Combine Cataracts + AMD + Acuity)
+   - VR Screen-Tap Controls
+   ========================================================================= */
+
+// Math functions for CSF Acuity
+const SPN=199, SPN_l=Math.log10(SPN);
+const FPN=0.915, FPN_l=Math.log10(FPN);
+const wL=0.68, wH=1.28;
+function cFromPR(PR){ const t=Math.pow(10,-PR); return (2-t)/(199*t); }
+function aFromLogMARandC(logMAR, c){
+  const S=Math.pow(10,-logMAR), FCN=14.0;
+  const FCl=Math.log10(Math.max(1e-6,S*FCN));
+  const delta=Math.sqrt(Math.max(0, SPN_l+Math.log10(Math.max(1e-9,c))))/wH;
+  return Math.pow(10, FCl-delta)/FPN;
+}
+function Sl_log(f,a,c){
+  const fl=Math.log10(Math.max(1e-6,f));
+  const FPl=FPN_l+Math.log10(Math.max(1e-9,a));
+  return SPN_l+Math.log10(Math.max(1e-9,c))-Math.pow(fl-FPl,2)*((f<Math.pow(10,FPl))?wL:wH)*((f<Math.pow(10,FPl))?wL:wH);
+}
+function computeCSFBandGains(severity, ch, vFovDeg){
+  const PPD = ch / vFovDeg; 
+  const c = cFromPR(2.0), a = aFromLogMARandC(severity * 1.3, c);
+  const gains = new Float32Array(4);
+  for(let i=0;i<4;i++){
+    let freq = 0.5/Math.pow(2,i+0.5)*PPD;
+    gains[i] = Math.max(0, Math.pow(10, Sl_log(freq,a,c)-Sl_log(freq,1,1)));
+  }
+  return gains;
+}
+
+// ─── GLSL ───
+const VERT_SRC=`#version 300 es
+in vec4 aPos; in vec2 aUV; out vec2 vUV;
+void main(){ vUV=aUV; gl_Position=aPos; }`;
+
+const FRAG_SRC=`#version 300 es
+precision highp float; // Upgraded precision for HD math
+in vec2 vUV;
+out vec4 fragColor;
+
+uniform sampler2D uTex;
+uniform int uActiveMask; // Bitmask for active conditions
+uniform float uSeverity;
+uniform float uTime;
+uniform vec2 uResolution;
+uniform vec4 uBandGains;  
+uniform int uVRMode;      
+uniform float uK1,uK2, uVFOV;
+
+vec3 srgbToLinear(vec3 c){ return mix(c/12.92, pow((c+0.055)/1.055, vec3(2.4)), step(0.04045,c)); }
+vec3 linearToSrgb(vec3 c){ return mix(c*12.92, 1.055*pow(c,vec3(1.0/2.4))-0.055, step(0.0031308,c)); }
+float hash(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
+
+// Upgraded High-Fidelity Optical Blur (64 Samples)
+vec3 spiralBlur(sampler2D tex, vec2 uv, float radiusPx) {
+    if (radiusPx <= 1.0) return texture(tex, uv).rgb;
+    vec3 col = vec3(0.0);
+    const float GOLDEN_ANGLE = 2.39996323; 
+    const float SAMPLES = 64.0; // Doubled to fix pixelation
+    
+    for(float i = 0.0; i < SAMPLES; i++) {
+        float r = length(uResolution) * (radiusPx / uResolution.y) * sqrt(i / SAMPLES);
+        float theta = i * GOLDEN_ANGLE;
+        vec2 offset = vec2(cos(theta), sin(theta)) * r;
+        vec2 sampleUV = clamp(uv + (offset / uResolution), 0.0, 1.0);
+        col += texture(tex, sampleUV).rgb;
+    }
+    return col / SAMPLES;
+}
+
+void main(){
+  vec2 uv = vUV; uv.y = 1.0 - uv.y; 
+
+  // VR Lens Distortion
+  if(uVRMode>0){
+    if(abs(vUV.x-0.5) < 3.0/uResolution.x) { fragColor=vec4(0.0,0.0,0.0,1.0); return; }
+    vec2 eyeUV = vec2((uv.x>0.5) ? (uv.x-0.5)*2.0 : uv.x*2.0, uv.y);
+    vec2 d = eyeUV - 0.5;
+    float halfA = (uResolution.x*0.5)/uResolution.y;
+    d.x *= halfA;
+    float r2 = dot(d,d);
+    d *= 1.0 + uK1*r2 + uK2*r2*r2;
+    d.x /= halfA;
+    vec2 dist = vec2(0.5) + d;
+    if(dist.x<0.0 || dist.x>1.0 || dist.y<0.0 || dist.y>1.0) { fragColor=vec4(0.0,0.0,0.0,1.0); return; }
+    uv = dist;
+  }
+
+  // --- START PIPELINE ---
+  vec3 col = texture(uTex, uv).rgb;
+
+  // 1. Acuity Loss (Bit 1)
+  if((uActiveMask & 1) != 0){
+    vec3 m0 = srgbToLinear(col);
+    vec3 m1 = srgbToLinear(spiralBlur(uTex, uv, 2.0));
+    vec3 m2 = srgbToLinear(spiralBlur(uTex, uv, 4.0));
+    vec3 m3 = srgbToLinear(spiralBlur(uTex, uv, 8.0));
+    vec3 m4 = srgbToLinear(spiralBlur(uTex, uv, 16.0));
+    vec3 result = m4 + ((m0-m1)*uBandGains.x) + ((m1-m2)*uBandGains.y) + ((m2-m3)*uBandGains.z) + ((m3-m4)*uBandGains.w);
+    col = linearToSrgb(clamp(result, 0.0, 1.0));
+  }
+
+  // 2. Reduced Contrast (Bit 2)
+  if((uActiveMask & 2) != 0){
+    float PR = 2.0 - uSeverity*2.0;
+    float k = min(1.0,pow(10.0,PR-2.0));
+    vec3 lin = srgbToLinear(col);
+    float Y = dot(lin, vec3(0.2126,0.7152,0.0722));
+    col = linearToSrgb(clamp(vec3(Y) + k*(lin-vec3(Y)), 0.0, 1.0));
+  }
+
+  // 3. Cataracts (Bit 4)
+  if((uActiveMask & 4) != 0){
+    vec3 blurred = spiralBlur(uTex, uv, uSeverity * 25.0);
+    float yf = uSeverity*0.7;
+    blurred.b *= (1.0-0.8*yf); blurred.r *= (1.0+0.10*yf); blurred.g *= (1.0+0.05*yf);
+    vec3 lin = mix(srgbToLinear(blurred), vec3(0.43,0.39,0.35), uSeverity*0.25);
+    
+    // Stack it: Mix the cataract blur onto the current pipeline color based on severity
+    col = mix(col, linearToSrgb(clamp(lin,0.0,1.0)), uSeverity);
+  }
+
+  // Calculate physical degrees for Masks
+  vec2 diff = (uVRMode>0) ? 
+    (vec2((vUV.x>0.5?(vUV.x-0.5)*2.0:vUV.x*2.0), 1.0-vUV.y) - vec2(0.5)) * vec2((uResolution.x*0.5)/uResolution.y,1.0) : 
+    (uv-vec2(0.5)) * vec2(uResolution.x/uResolution.y, 1.0);
+  float distDeg = length(diff) * uVFOV;
+
+  // 4. Glaucoma (Bit 8)
+  if((uActiveMask & 8) != 0){
+    float clearR = mix(45.0, 5.0, uSeverity); 
+    float mask = 1.0 - smoothstep(clearR, clearR + mix(15.0, 2.0, uSeverity), distDeg);
+    col = mix(vec3(0.0), col, mask);
+  }
+
+  // 5. AMD (Bit 16)
+  if((uActiveMask & 16) != 0){
+    float scR = mix(2.0, 20.0, uSeverity);
+    float mask = smoothstep(scR - mix(0.5, 2.0, uSeverity), scR + mix(0.5, 2.0, uSeverity), distDeg);
+    col = mix(vec3(0.02), col, mask);
+  }
+
+  // 6. Diabetic Retinopathy (Bit 32)
+  if((uActiveMask & 32) != 0){
+    float numSpots = 4.0 + uSeverity*12.0;
+    for(float i=0.0; i<16.0; i++){
+      if(i>=numSpots) break;
+      vec2 sc = vec2(hash(vec2(i*7.13,3.71)),hash(vec2(i*11.97,5.23)));
+      sc += 0.03*vec2(sin(uTime*0.15+i*2.1),cos(uTime*0.12+i*1.7));
+      float sz = 0.02 + 0.04*hash(vec2(i*3.3,9.1))*uSeverity;
+      float d2 = length((uv-fract(sc)) * vec2(uResolution.x/uResolution.y, 1.0));
+      col = mix(col, col*0.08, (1.0-smoothstep(sz*0.5,sz,d2))*0.85);
+    }
+  }
+
+  fragColor=vec4(col,1.0);
+}`;
+
+let gl,program,videoEl,glCanvas;
+let uTex,uActiveMask,uSeverity,uTime,uResolution,uBandGains,uVRMode,uK1,uK2,uVFOV_loc;
+let videoTexture, videoReady=false;
+let activeBitmask = 0; 
+let currentSeverity = 0.5;
+let startTime = performance.now()/1000, vrActive=false;
+
+function initGL(){
+  glCanvas=document.getElementById('glCanvas');
+  gl=glCanvas.getContext('webgl2',{antialias:false,alpha:false,preserveDrawingBuffer:true});
+  if(!gl) return false;
+
+  const compile=(type,src)=>{
+    const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+    return gl.getShaderParameter(s,gl.COMPILE_STATUS)?s:null;
+  };
+  const vs=compile(gl.VERTEX_SHADER,VERT_SRC), fs=compile(gl.FRAGMENT_SHADER,FRAG_SRC);
+  
+  program=gl.createProgram(); gl.attachShader(program,vs); gl.attachShader(program,fs); gl.linkProgram(program);
+  gl.useProgram(program);
+
+  const quad=new Float32Array([-1,-1,0,0, 1,-1,1,0, -1,1,0,1, 1,1,1,1]);
+  const vbo=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,vbo); gl.bufferData(gl.ARRAY_BUFFER,quad,gl.STATIC_DRAW);
+  const aPos=gl.getAttribLocation(program,'aPos'); gl.enableVertexAttribArray(aPos); gl.vertexAttribPointer(aPos,2,gl.FLOAT,false,16,0);
+  const aUV=gl.getAttribLocation(program,'aUV'); gl.enableVertexAttribArray(aUV); gl.vertexAttribPointer(aUV,2,gl.FLOAT,false,16,8);
+
+  uTex=gl.getUniformLocation(program,'uTex');
+  uActiveMask=gl.getUniformLocation(program,'uActiveMask');
+  uSeverity=gl.getUniformLocation(program,'uSeverity');
+  uTime=gl.getUniformLocation(program,'uTime');
+  uResolution=gl.getUniformLocation(program,'uResolution');
+  uBandGains=gl.getUniformLocation(program,'uBandGains');
+  uVRMode=gl.getUniformLocation(program,'uVRMode');
+  uK1=gl.getUniformLocation(program,'uK1'); uK2=gl.getUniformLocation(program,'uK2');
+  uVFOV_loc=gl.getUniformLocation(program,'uVFOV');
+
+  videoTexture=gl.createTexture(); gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,videoTexture);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,1,1,0,gl.RGBA,gl.UNSIGNED_BYTE,new Uint8Array([0,0,0,255]));
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  return true;
+}
+
+async function startCamera(){
+  videoEl=document.getElementById('cameraVideo');
+  // UPGRADED TO 1080p
+  const stream=await navigator.mediaDevices.getUserMedia({ video:{facingMode:'environment', width:{ideal:1920}, height:{ideal:1080}}, audio:false });
+  videoEl.srcObject=stream; await videoEl.play();
+  videoReady=true;
+  document.getElementById('startScreen').style.display='none';
+  document.getElementById('controls').style.display='block';
+  document.getElementById('actionBtns').style.display='flex';
+  
+  const loop = () => {
+    if(!videoReady) return;
+    const cw=glCanvas.clientWidth, ch=glCanvas.clientHeight;
+    if(glCanvas.width!==cw || glCanvas.height!==ch){ glCanvas.width=cw; glCanvas.height=ch; gl.viewport(0,0,cw,ch); }
+
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D,videoTexture);
+    gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,videoEl);
+
+    gl.uniform1i(uActiveMask, activeBitmask);
+    gl.uniform1f(uSeverity, currentSeverity);
+    gl.uniform1f(uTime, performance.now()/1000-startTime);
+    gl.uniform2f(uResolution, cw, ch);
+    gl.uniform1f(uVFOV_loc, 52.0);
+
+    const gains=computeCSFBandGains(currentSeverity, ch, 52.0);
+    gl.uniform4f(uBandGains, gains[0],gains[1],gains[2],gains[3]);
+
+    gl.uniform1i(uVRMode, vrActive?1:0);
+    gl.uniform1f(uK1, 0.34); gl.uniform1f(uK2, 0.55);
+
+    gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
+    requestAnimationFrame(loop);
+  };
+  loop();
+}
+
+// UI Handlers
+document.addEventListener('DOMContentLoaded',()=>{
+  if(!initGL()) return;
+  document.getElementById('startBtn').addEventListener('click',startCamera);
+
+  // Toggle Buttons Logic (Bitmask)
+  document.querySelectorAll('.toggle-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+      this.classList.toggle('active');
+      const flag = parseInt(this.getAttribute('data-flag'));
+      if(this.classList.contains('active')) activeBitmask |= flag; // Turn bit ON
+      else activeBitmask &= ~flag; // Turn bit OFF
+    });
+  });
+
+  const sevSlider=document.getElementById('severity'), sevVal=document.getElementById('sevVal');
+  sevSlider.addEventListener('input',()=>{
+    currentSeverity=parseFloat(sevSlider.value);
+    sevVal.textContent = Math.round(currentSeverity * 100) + '%';
+  });
+
+  // VR Mode & Headset Tap Listener
+  document.getElementById('vrBtn').addEventListener('click',() => {
+    vrActive=!vrActive;
+    document.getElementById('vrBtn').classList.toggle('active',vrActive);
+    document.body.classList.toggle('vr-active',vrActive);
+    if(vrActive) {
+      document.getElementById('vrNotify').style.display='block';
+      setTimeout(()=>document.getElementById('vrNotify').style.display='none', 2000);
+      try{ screen.orientation.lock('landscape').catch(()=>{}); }catch(e){}
+    } else {
+      try{ screen.orientation.unlock(); }catch(e){}
+    }
+  });
+
+  // VR SCREEN TAP: Cycle severity when phone is in headset
+  document.body.addEventListener('click', (e) => {
+    // Only intercept if VR is active and they didn't click a real button
+    if(!vrActive || e.target.tagName === 'BUTTON' || e.target.tagName === 'INPUT') return;
+    
+    // Cycle: 0, 0.25, 0.50, 0.75, 1.0, back to 0
+    currentSeverity += 0.25;
+    if(currentSeverity > 1.01) currentSeverity = 0.0; // Reset
+    
+    // Update variables & UI
+    sevSlider.value = currentSeverity;
+    sevVal.textContent = Math.round(currentSeverity * 100) + '%';
+    
+    // Show visual confirmation in VR
+    const notify = document.getElementById('vrNotify');
+    notify.textContent = "Severity: " + Math.round(currentSeverity * 100) + '%';
+    notify.style.display = 'block';
+    clearTimeout(notify.timer);
+    notify.timer = setTimeout(()=> notify.style.display='none', 1500);
+  });
+
+  document.getElementById('collapseBtn').addEventListener('click',function(){
+    document.getElementById('controls').classList.toggle('collapsed');
+  });
+});
+</script>
+</body>
+</html>
