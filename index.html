@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0" />
+    <title>Live Vision Accessibility Simulator | Virginia Tech</title>
+
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
+
+    <style>
+        :root {
+            --vt-maroon: #861f41;
+            --vt-orange: #e87722;
+            --vt-maroon-dark: #5f1530;
+            --vs-bg: #0b1020;
+            --vs-panel: #121a33;
+            --vs-border: #1e2a54;
+            --vs-muted: #8ea0d0;
+        }
+
+        body {
+            background-color: var(--vs-bg);
+            color: #ffffff;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        /* Layout */
+        .app-container {
+            display: flex;
+            flex-direction: row;
+            height: 100%;
+        }
+
+        .sidebar {
+            width: 320px;
+            background-color: var(--vs-panel);
+            border-right: 1px solid var(--vs-border);
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            z-index: 10;
+        }
+
+        .main-stage {
+            flex-grow: 1;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background-color: #000;
+            position: relative;
+            overflow: hidden;
+        }
+
+        /* Canvas */
+        #sim-canvas {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+        }
+
+        /* Buttons & UI */
+        .vs-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: 10px;
+            color: #ffffff;
+        }
+
+        .vs-btn {
+            background-color: var(--vt-maroon);
+            color: white;
+            border: none;
+            padding: 12px 15px;
+            border-radius: 6px;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            transition: background-color 0.2s;
+        }
+
+        .vs-btn:hover {
+            background-color: var(--vt-maroon-dark);
+            color: white;
+        }
+
+        .vs-btn-danger {
+            background-color: #dc3545;
+        }
+
+        .vs-btn-danger:hover {
+            background-color: #b02a37;
+        }
+
+        .status-text {
+            color: var(--vs-muted);
+            font-size: 0.85rem;
+            padding: 10px;
+            background-color: rgba(0,0,0,0.2);
+            border-radius: 6px;
+            border: 1px solid var(--vs-border);
+        }
+
+        /* Mobile Adjustments */
+        @media (max-width: 768px) {
+            .app-container {
+                flex-direction: column-reverse;
+            }
+            .sidebar {
+                width: 100%;
+                border-right: none;
+                border-top: 1px solid var(--vs-border);
+                padding: 15px;
+                height: auto;
+            }
+            .main-stage {
+                height: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="app-container">
+        <div class="sidebar">
+            <div class="vs-title">Live Vision Simulator</div>
+            
+            <button id="start-camera-btn" class="vs-btn w-100">
+                <i class="bi bi-camera-video"></i> Start Rear Camera
+            </button>
+
+            <div id="camera-status" class="status-text">
+                <i class="bi bi-info-circle"></i> Status: Waiting for camera...
+            </div>
+            
+            <div class="status-text mt-auto" style="border: none; background: none; font-size: 0.75rem;">
+                Milestone 1: Live 2D Canvas Feed
+            </div>
+        </div>
+
+        <div class="main-stage">
+            <canvas id="sim-canvas"></canvas>
+        </div>
+    </div>
+
+    <video id="live-video" playsinline autoplay muted style="display: none;"></video>
+
+    <script>
+        const videoElement = document.getElementById('live-video');
+        const startCameraBtn = document.getElementById('start-camera-btn');
+        const cameraStatus = document.getElementById('camera-status');
+        const canvas = document.getElementById('sim-canvas');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+        let isCameraRunning = false;
+        let animationFrameId;
+
+        // Event Listener for the main button
+        startCameraBtn.addEventListener('click', async () => {
+            if (isCameraRunning) {
+                stopCamera();
+            } else {
+                await startCamera();
+            }
+        });
+
+        async function startCamera() {
+            try {
+                cameraStatus.innerHTML = '<i class="bi bi-hourglass-split"></i> Status: Requesting permission...';
+                
+                // Request the rear camera specifically. 
+                // 720p is requested to keep the mobile processor from overheating during continuous rendering.
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        facingMode: "environment",
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 }
+                    },
+                    audio: false
+                });
+
+                // Feed stream to hidden video tag
+                videoElement.srcObject = stream;
+                
+                // Wait for video to initialize and have actual dimensions
+                videoElement.onloadedmetadata = () => {
+                    videoElement.play();
+                    isCameraRunning = true;
+                    
+                    // Update UI
+                    startCameraBtn.innerHTML = '<i class="bi bi-stop-circle"></i> Stop Camera';
+                    startCameraBtn.classList.add('vs-btn-danger');
+                    cameraStatus.innerHTML = '<i class="bi bi-check-circle" style="color: #198754;"></i> Status: Running natively in browser';
+                    
+                    // Match canvas internal resolution to the video feed resolution
+                    canvas.width = videoElement.videoWidth;
+                    canvas.height = videoElement.videoHeight;
+                    
+                    // Start the render loop
+                    renderLiveFrame();
+                };
+
+            } catch (err) {
+                console.error("Camera access error:", err);
+                cameraStatus.innerHTML = `<i class="bi bi-exclamation-triangle" style="color: #dc3545;"></i> Error: ${err.message}. Make sure you are on HTTPS.`;
+            }
+        }
+
+        function stopCamera() {
+            const stream = videoElement.srcObject;
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+            }
+            videoElement.srcObject = null;
+            isCameraRunning = false;
+            
+            cancelAnimationFrame(animationFrameId);
+            
+            // Clear the canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Reset UI
+            startCameraBtn.innerHTML = '<i class="bi bi-camera-video"></i> Start Rear Camera';
+            startCameraBtn.classList.remove('vs-btn-danger');
+            cameraStatus.innerHTML = '<i class="bi bi-info-circle"></i> Status: Stopped';
+        }
+
+        function renderLiveFrame() {
+            if (!isCameraRunning) return;
+
+            // Draw the current video frame directly onto the 2D canvas
+            ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+
+            // Loop at the display's refresh rate (typically 60fps)
+            animationFrameId = requestAnimationFrame(renderLiveFrame);
+        }
+    </script>
+</body>
+</html>
